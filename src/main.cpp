@@ -1,30 +1,42 @@
 #include <Arduino.h>
+
+//Sensor
 #include "bsec.h"
+#include "Wire.h"
+#include <EEPROM.h>
+
+#include <SoftwareSerial.h>
 #include "MHZ19.h"
 
-#include <EEPROM.h>
+//Wifi
 #include <WiFi.h>
 
+//Web
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 
+//LED
 #include <FastLED.h>
 #include <SectionManager.h>
 #include <helpers.h>
 
+//Time
 #include <time.h>
 
+
+//EPD
 #include <GxEPD2_BW.h>
 #include <GxEPD2_3C.h>
 
-#include "../Font/BabelSans7pt7b.h"
+#include "../Font/BabelSans8pt7b.h"
 #include "../Font/Inter_Regular12pt7b.h"
 #include "../Font/Inter_Regular11pt7b.h"
 #include "../Font/Inter_Regular10pt7b.h"
 #include "../Font/Inter_Bold12pt7b.h"
+#include "../Font/Inter_Bold10pt7b.h"
 #include "GxEPD2_display_selection_new_style.h"
 
-// own files
+//OWN FILES
 #include "symbol.h" // own symbol
 // please rename credentials_example.h to credentials.h
 #include <credentials.h>
@@ -68,7 +80,10 @@ String deviceName    = "SensorTurtle 1";
 // sensor MH-Z19B
 #define PIN_MHZ19B_RX 17
 #define PIN_MHZ19B_TX 16
-#define BAUDRATE 9600
+
+// sensor BME680
+#define PIN_BME680_SDA 21
+#define PIN_BME680_SCL 22
 
 // leds
 #define NUM_LEDS 34 //count
@@ -77,18 +92,21 @@ String deviceName    = "SensorTurtle 1";
 // timezone
 const String timezone = "CET-1CEST,M3.5.0,M10.5.0/3";
 
+#define BAUDRATE 9600
+
 // _______________
 // EPD ePaper eINK
 // ---------------
-// BUSY     -> -1			  Violett, 
-// RST      -> -1  		  RX2	Blau, 
-// DC       -> 19  		  TX2	grün, 
-// CS       -> SS(5)		gelb, 
-// CLK      -> SCK (~18)	orange, 
-// DIN /SDI -> MOSI (~23) weiß, 
-// GND      -> GND, 
-// 3.3V     -> 3.3V
+// BUSY 	-> -1			Violett, 
+// RST 		-> -1 		RX2	Blau, 
+// DC 		-> 27  		TX2	grün, 
+// CS 		-> SS(5)		gelb, 
+// CLK 		-> SCK(18)		orange, 
+// DIN /SDI -> MOSI(23) 	weiß, 
+// GND 		-> GND, 
+// 3.3V 	-> 3.3V
 //#define GxEPD2_DRIVER_CLASS GxEPD2_213_Z98c // GDEY0213Z98 122x250, SSD1680
+
 
 // _______________
 // LED
@@ -117,16 +135,6 @@ const String timezone = "CET-1CEST,M3.5.0,M10.5.0/3";
 // --------------------------------------------------------------------------
 // sensor data
 // --------------------------------------------------------------------------
-
-
-HardwareSerial mySerial(1);
-//save calibration data
-#define STATE_SAVE_PERIOD UINT32_C(1440 * 60 * 1000) // 1440 minutes - 1 times a day
-MHZ19 myMHZ19B; // Co2 sensor
-
-
-
-
 const String name_timestamp         = "Timestamp [ms]";
 const String name_rawtemperatur     = "raw temperature [°C]";
 const String name_pressure          = "pressure [hPa]";
@@ -175,18 +183,15 @@ String descr_iaq              = "";
 String descr_MHZ19B_co2       = "";
 
 String header_data            = "";
+
 String consout                = "";
 
-
 // --------------------------------------------------------------------------
-// IAQ data
+// BME680 sensor
 // --------------------------------------------------------------------------
 
-
-const uint8_t bsec_config_iaq[] = {  
-  //#include "config/generic_33v_300s_28d/bsec_iaq.txt"
-  #include "config/generic_33v_300s_4d/bsec_iaq.txt"
-};
+//save calibration data
+#define STATE_SAVE_PERIOD UINT32_C(1440 * 60 * 1000) // 1440 minutes - 1 times a day
 // Create an object of the class Bsec
 Bsec iaqSensor;
 uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE] = {0};
@@ -195,38 +200,195 @@ uint16_t stateUpdateCounter = 0;
 uint32_t lastTime = 0;
 int latest_accuracy = 0;
 
+
 void checkIaqSensorStatus(void)
 {
-  if (iaqSensor.status != BSEC_OK)
-  {
-    if (iaqSensor.status < BSEC_OK)
-    {
-      consout = "BSEC error code : " + String(iaqSensor.status);
+  if (iaqSensor.bsecStatus != BSEC_OK) {
+    if (iaqSensor.bsecStatus < BSEC_OK) {
+      consout = "BSEC error code : " + String(iaqSensor.bsecStatus);
       Serial.println(consout);
       for (;;)
         errLeds(); /* Halt in case of failure */
-    }
-    else
-    {
-      consout = "BSEC warning code : " + String(iaqSensor.status);
+    } else {
+      consout = "BSEC warning code : " + String(iaqSensor.bsecStatus);
       Serial.println(consout);
     }
   }
 
-  if (iaqSensor.bme680Status != BME680_OK)
-  {
-    if (iaqSensor.bme680Status < BME680_OK)
-    {
-      consout = "BME680 error code : " + String(iaqSensor.bme680Status);
+  if (iaqSensor.bme68xStatus != BME68X_OK) {
+    if (iaqSensor.bme68xStatus < BME68X_OK) {
+      consout = "BME68X error code : " + String(iaqSensor.bme68xStatus);
       Serial.println(consout);
       for (;;)
         errLeds(); /* Halt in case of failure */
-    }
-    else
-    {
-      consout = "BME680 warning code : " + String(iaqSensor.bme680Status);
+    } else {
+      consout = "BME68X warning code : " + String(iaqSensor.bme68xStatus);
       Serial.println(consout);
     }
+  }
+}
+
+
+
+void setupBME()
+{
+  EEPROM.begin(BSEC_MAX_STATE_BLOB_SIZE + 1);                         // 1st address for the length
+  Wire.begin(PIN_BME680_SDA, PIN_BME680_SCL);
+  pinMode(LED_BUILTIN, OUTPUT);
+
+
+  iaqSensor.begin(BME68X_I2C_ADDR_HIGH, Wire);
+  iaqSensor.setTemperatureOffset(4);
+
+  consout = "\nBSEC library version " + String(iaqSensor.version.major) + "." + String(iaqSensor.version.minor) + "." + String(iaqSensor.version.major_bugfix) + "." + String(iaqSensor.version.minor_bugfix);
+  Serial.println(consout);
+
+  checkIaqSensorStatus();
+  // clearState();
+  loadState();
+
+  bsec_virtual_sensor_t sensorList[13] = {
+    BSEC_OUTPUT_IAQ,
+    BSEC_OUTPUT_STATIC_IAQ,
+    BSEC_OUTPUT_CO2_EQUIVALENT,
+    BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
+    BSEC_OUTPUT_RAW_TEMPERATURE,
+    BSEC_OUTPUT_RAW_PRESSURE,
+    BSEC_OUTPUT_RAW_HUMIDITY,
+    BSEC_OUTPUT_RAW_GAS,
+    BSEC_OUTPUT_STABILIZATION_STATUS,
+    BSEC_OUTPUT_RUN_IN_STATUS,
+    BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
+    BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
+    BSEC_OUTPUT_GAS_PERCENTAGE
+  };
+
+  iaqSensor.updateSubscription(sensorList, 13, BSEC_SAMPLE_RATE_LP);
+  // iaqSensor.updateSubscription(sensorList, 10, BSEC_SAMPLE_RATE_ULP);
+  checkIaqSensorStatus();
+
+}
+
+
+
+// --------------------------------------------------------------------------
+// MH-Z19 sensor Co2
+// --------------------------------------------------------------------------
+MHZ19 myMHZ19;
+SoftwareSerial Serial_MHZ19(PIN_MHZ19B_RX, PIN_MHZ19B_TX);
+unsigned long getDataTimer = 0;
+void setRange(int range);
+
+void co2setup(){
+
+    Serial_MHZ19.begin(BAUDRATE);                                // Uno Example: Begin Stream with MHZ19 baudrate
+    myMHZ19.begin(Serial_MHZ19);                                 // *Important, Pass your Stream reference
+
+    delay(200);
+
+    myMHZ19.autoCalibration(true);
+    Serial.print("ABC Status: "); myMHZ19.getABC() ? Serial.println("ON") :  Serial.println("OFF");  // now print it's status
+
+    char myVersion[4];
+    myMHZ19.getVersion(myVersion);
+    
+    Serial.print("Range: ");
+    Serial.println(myMHZ19.getRange());
+
+    //Serial.println("Calibrating..");
+    //myMHZ19.calibrate();    // Take a reading which be used as the zero point for 400 ppm
+    Serial.println("");
+}
+
+
+void errLeds(void)
+{
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(500);
+  digitalWrite(LED_BUILTIN, LOW);
+  delay(500);
+}
+
+void loadState(void)
+{
+  if (EEPROM.read(0) == BSEC_MAX_STATE_BLOB_SIZE)
+  {
+    // Existing state in EEPROM
+    Serial.println("Reading state from EEPROM");
+
+    for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE; i++)
+    {
+      bsecState[i] = EEPROM.read(i + 1);
+      Serial.println(bsecState[i], HEX);
+    }
+
+    iaqSensor.setState(bsecState);
+    checkIaqSensorStatus();
+  }
+  else
+  {
+    // Erase the EEPROM with zeroes
+    Serial.println("Erasing EEPROM");
+
+    for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE + 1; i++)
+      EEPROM.write(i, 0);
+
+    EEPROM.commit();
+  }
+}
+
+void clearState(void)
+{
+  // Erase the EEPROM with zeroes
+  Serial.println("Erasing EEPROM");
+
+  for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE + 1; i++)
+    EEPROM.write(i, 0);
+
+  EEPROM.commit();
+}
+
+void updateState(void)
+{
+  bool update = false;
+  if (stateUpdateCounter == 0)
+  {
+    /* Set a trigger to save the state. Here, the state is saved every STATE_SAVE_PERIOD with the first state being saved once the algorithm achieves full calibration, i.e. iaqAccuracy = 3 */
+    if (iaqSensor.iaqAccuracy >= 3)
+    {
+      update = true;
+      stateUpdateCounter++;
+    }
+  }
+  else
+  {
+    /* Update every STATE_SAVE_PERIOD milliseconds */
+    if ((stateUpdateCounter * STATE_SAVE_PERIOD) < millis())
+    {
+      if (iaqSensor.iaqAccuracy >= 3)
+      {
+        update = true;
+        stateUpdateCounter++;
+      }
+    }
+  }
+
+  if (update)
+  {
+    iaqSensor.getState(bsecState);
+    checkIaqSensorStatus();
+    //myMHZ19.calibrateZero();
+    Serial.println("Writing state to EEPROM");
+
+    for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE; i++)
+    {
+      EEPROM.write(i + 1, bsecState[i]);
+      Serial.println(bsecState[i], HEX);
+    }
+
+    EEPROM.write(0, BSEC_MAX_STATE_BLOB_SIZE);
+    EEPROM.commit();
   }
 }
 
@@ -358,10 +520,11 @@ void WiFiSetup()
 }
 
 
+
+
 // --------------------------------------------------------------------------
 // time functions
 // --------------------------------------------------------------------------
-
 const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec = 0;
 const int   daylightOffset_sec = 3600;
@@ -391,17 +554,18 @@ String localTime(String format)
 
 
 
-
-
 // --------------------------------------------------------------------------
 // EPD ePaper eINK
 // --------------------------------------------------------------------------
 String after_comma(String data){
   int a = data.toDouble();
   int b = (data.toDouble() - a) * 100;
-  return String(b);
+  String sb = String(b);
+  if (b < 10) {
+    sb += "0";
+  }
+  return sb;
 }
-
 String before_comma(String data){
   int a = data.toDouble();
   return String(a);
@@ -409,7 +573,7 @@ String before_comma(String data){
 
 void epd(String epd_name, String epd_time, String data_temp, String data_humidity, String data_airq, String data_co2  )
 {
-    display.init(9600);
+    display.init(BAUDRATE);
 
     uint16_t color_temp = GxEPD_BLACK;
     uint16_t color_hum = GxEPD_BLACK;
@@ -694,9 +858,7 @@ void handle_status(AsyncWebServerRequest *request)
 // Entry point for the example
 void setup(void)
 {
-  
-
-  Serial.begin(9600);
+    Serial.begin(BAUDRATE);
 
   addLEDsection();
 
@@ -713,39 +875,13 @@ void setup(void)
 
   server.begin();
 
-  EEPROM.begin(BSEC_MAX_STATE_BLOB_SIZE + 1);                         // 1st address for the length
-  mySerial.begin(BAUDRATE, SERIAL_8N1, PIN_MHZ19B_RX, PIN_MHZ19B_TX); // ESP32 Example
-  myMHZ19B.begin(mySerial);                                           // *Important, Pass your Stream reference
-  myMHZ19B.autoCalibration(true);                                     // Turn Auto Calibration OFF
-  Wire.begin();
+  co2setup();
 
-  iaqSensor.begin(0x77, Wire);
-  consout = "\nBSEC library version " + String(iaqSensor.version.major) + "." + String(iaqSensor.version.minor) + "." + String(iaqSensor.version.major_bugfix) + "." + String(iaqSensor.version.minor_bugfix + " \n ");
-  Serial.println(consout);
-  checkIaqSensorStatus();
+  setupBME();
+  
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
-  iaqSensor.setTemperatureOffset(4);
-
-  iaqSensor.setConfig(bsec_config_iaq);
-  checkIaqSensorStatus();
-  // clearState();
-  loadState();
-
-  bsec_virtual_sensor_t sensorList[10] = {
-      BSEC_OUTPUT_RAW_TEMPERATURE,
-      BSEC_OUTPUT_RAW_PRESSURE,
-      BSEC_OUTPUT_RAW_HUMIDITY,
-      BSEC_OUTPUT_RAW_GAS,
-      BSEC_OUTPUT_IAQ,
-      BSEC_OUTPUT_STATIC_IAQ,
-      BSEC_OUTPUT_CO2_EQUIVALENT,
-      BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
-      BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
-      BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
-  };
-
-  iaqSensor.updateSubscription(sensorList, 10, BSEC_SAMPLE_RATE_ULP);
-  checkIaqSensorStatus();
 }
 
 
@@ -789,7 +925,7 @@ void loop(void)
 		data_iaqstatic           = String(iaqSensor.staticIaq);
 		data_co2equil            = String(iaqSensor.co2Equivalent);
 		data_breahtvoc           = String(iaqSensor.breathVocEquivalent);
-    data_MHZ19B_co2          = String(myMHZ19B.getCO2());
+    data_MHZ19B_co2          = String(myMHZ19.getCO2());
     data_date                = localTime("%Y-%m-%d");
     data_time                = localTime("%H:%M:%S");
     data_zone                = localTime("%Z %z");
@@ -1001,7 +1137,7 @@ void loop(void)
 
 
 
-    int MHZ19CO2 = myMHZ19B.getCO2();
+    int MHZ19CO2 = myMHZ19.getCO2();
     int checkCO2 = MHZ19CO2;
     
     if (MHZ19CO2 == 0)
@@ -1065,102 +1201,14 @@ void loop(void)
         descr_MHZ19B_co2 = "Warning. Tiredness, headache. please ventilate urgently.";
       }
     }
+    
+    
+    
     FastLED.setBrightness(50);
     FastLED.show();
   }
   else
   {
     checkIaqSensorStatus();
-  }
-}
-
-void errLeds(void)
-{
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(100);
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(100);
-}
-
-void loadState(void)
-{
-  if (EEPROM.read(0) == BSEC_MAX_STATE_BLOB_SIZE)
-  {
-    // Existing state in EEPROM
-    Serial.println("Reading state from EEPROM");
-
-    for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE; i++)
-    {
-      bsecState[i] = EEPROM.read(i + 1);
-      Serial.println(bsecState[i], HEX);
-    }
-
-    iaqSensor.setState(bsecState);
-    checkIaqSensorStatus();
-  }
-  else
-  {
-    // Erase the EEPROM with zeroes
-    Serial.println("Erasing EEPROM");
-
-    for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE + 1; i++)
-      EEPROM.write(i, 0);
-
-    EEPROM.commit();
-  }
-}
-
-void clearState(void)
-{
-  // Erase the EEPROM with zeroes
-  Serial.println("Erasing EEPROM");
-
-  for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE + 1; i++)
-    EEPROM.write(i, 0);
-
-  EEPROM.commit();
-}
-
-void updateState(void)
-{
-  bool update = false;
-  if (stateUpdateCounter == 0)
-  {
-    /* Set a trigger to save the state. Here, the state is saved every STATE_SAVE_PERIOD with the first state being saved once the algorithm achieves full calibration, i.e. iaqAccuracy = 3 */
-    if (iaqSensor.iaqAccuracy >= 3)
-    {
-      update = true;
-      stateUpdateCounter++;
-    }
-  }
-  else
-  {
-    /* Update every STATE_SAVE_PERIOD milliseconds */
-    if ((stateUpdateCounter * STATE_SAVE_PERIOD) < millis())
-    {
-      if (iaqSensor.iaqAccuracy >= 3)
-      {
-        update = true;
-        stateUpdateCounter++;
-      }
-    }
-  }
-
-  if (update)
-  {
-    iaqSensor.getState(bsecState);
-    checkIaqSensorStatus();
-    //myMHZ19B.calibrateZero();
-    Serial.println("Writing state to EEPROM");
-
-    for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE; i++)
-    {
-      EEPROM.write(i + 1, bsecState[i]);
-      Serial.println(bsecState[i], HEX);
-    }
-
-    EEPROM.write(0, BSEC_MAX_STATE_BLOB_SIZE);
-    EEPROM.commit();
   }
 }
